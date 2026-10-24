@@ -1,0 +1,6 @@
+.work/
+build/
+deps/
+*.jar
+*.log
+__pycache__/
