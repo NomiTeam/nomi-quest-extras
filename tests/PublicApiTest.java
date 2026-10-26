@@ -16,6 +16,7 @@ public final class PublicApiTest {
                 default -> void.class;
             };
         }
+        assert type.getDeclaredMethod("begin", Player.class, Object.class).getReturnType() == void.class;
         assert org.bukkit.Bukkit.class.getMethod("isOwnedByCurrentRegion", org.bukkit.entity.Entity.class)
                 .getReturnType() == boolean.class;
         System.out.println("PASS exact public Player API signatures and real Paper entity ownership API");

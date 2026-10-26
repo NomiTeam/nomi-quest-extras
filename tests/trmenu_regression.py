@@ -31,6 +31,25 @@ class TrMenuRegression(unittest.TestCase):
         ]:
             self.assertIn(fragment, SOURCE)
 
+    def test_quota_callback_abi(self):
+        prefix = 'me.arasple.mc.trmenu'
+        result = subprocess.run(['javap', '-classpath', str(JAR),
+            prefix + '.module.display.MenuSession',
+            prefix + '.module.display.Menu',
+            prefix + '.module.display.icon.Icon',
+            prefix + '.module.display.icon.IconProperty',
+            prefix + '.api.receptacle.ReceptacleClickType'],
+            text=True, capture_output=True, check=True)
+        for signature in [' SESSIONS;', 'getViewer();', 'getAgent();', 'isViewing();',
+                          'getIcon(java.lang.String);',
+                          'getProperty(' + prefix + '.module.display.MenuSession);',
+                          'handleClick(' + prefix + '.api.receptacle.ReceptacleClickType, ' + prefix + '.module.display.MenuSession);',
+                          ' LEFT;']:
+            self.assertIn(signature, result.stdout)
+        self.assertIn('quota.acquire(request.player, request.day, request.token)', SOURCE)
+        self.assertIn('request.arm(System.currentTimeMillis())', SOURCE)
+        self.assertIn('quotaRequests.remove(request.player, request)', SOURCE)
+
     def test_real_3125_backend_signatures(self):
         prefix = 'me.arasple.mc.trmenu'
         result = subprocess.run([

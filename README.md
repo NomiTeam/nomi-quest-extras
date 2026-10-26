@@ -2,13 +2,13 @@
 
 每日花费 **500 米粒**刷新 ODQ 整组任务，每人 Asia/Shanghai 自然日一次，未完成、部分完成或全部完成均可刷新。费用只由 TrMenu 原生动作处理；本插件不依赖 Vault，不扣费、不退款，不引入钱包、事务日志或恢复框架。
 
-本仓是未发布候选。完整最小菜单交接、原生能力判断及集成缺口见 [.work/native-first/backend-handoff.md](.work/native-first/backend-handoff.md)，结果、实际 SHA 和测试日志索引见 [.work/native-first/result.json](.work/native-first/result.json)。未更换生产包、未加载生产菜单、未执行真实支付或跨服交易。
+本插件使用独立共享 SQL 表实现全服自然日日限，并通过服务器原生库加载机制声明 MariaDB JDBC 驱动。源码审查与离线检查不代表玩家本人真实付款或跨服流程已经验收。
 
 ## 原生优先的边界
 
-ODQ 3.0.2 的玩家 reroll 只刷新单项；管理员 `dqadmin reset quests <玩家>` 可刷新整组，但重建 timestamp、清零 recentRerolls，且该路径不转交目标玩家实体线程。TrMenu 原生日期标记可以拼接正常流程，不能因缺少额外原子性就否定它；当前保留最小桥以在本人实体线程抽齐整组、复核任务状态并消耗 ODQ 自身的持久日限，不另建日期存储。
+ODQ 3.0.2 的玩家 reroll 只刷新单项；管理员 `dqadmin reset quests <玩家>` 可刷新整组，但重建 timestamp、清零 recentRerolls，且该路径不转交目标玩家实体线程。TrMenu 原生日期标记可以拼接正常流程，不能因缺少额外原子性就否定它；当前保留最小桥以在本人实体线程抽齐整组、复核任务状态并在收费前原子获取独立日限。日限表唯一键为 UUID、上海日期，不读取 ODQ recent_rerolls 判断额度。
 
-TrMenu 3.12.5 的 JEXL 每次复制上下文，可用于调用本桥；共享 JavaScript 的玩家绑定有已知串绑风险，不用于本流程。候选菜单的 JEXL 引擎执行与实体线程仍须集成验证；本地仅核验了真实 JAR 字节码及 API，不将其当作真人测试。
+TrMenu 3.12.5 的 JEXL 每次复制上下文，可用于调用本桥；共享 JavaScript 的玩家绑定有已知串绑风险，不用于本流程。真实 JAR 字节码及 API 的离线核验不等同于真实菜单、玩家实体线程或付款流程的运行验收。
 
 ## 行为与入口
 
@@ -23,14 +23,15 @@ TrMenu 3.12.5 的 JEXL 每次复制上下文，可用于调用本桥；共享 Ja
 从 Bukkit 插件管理器获取本插件实例，调用：
 
 ```java
+public void begin(org.bukkit.entity.Player player, Object trMenuSession);
 public boolean prepare(org.bukkit.entity.Player player);
 public String apply(org.bukkit.entity.Player player);
 public void cancel(org.bukkit.entity.Player player);
 ```
 
-同一玩家的实体线程顺序执行：TrMenu `money 500` 条件 → prepare 成功 → TrMenu `take-money: 500` → apply 一次 → 结果提示。完整动作配置见交接中的离线菜单夹具。不要插入 delay、提前 close、切换 agent 或全局控制台派发。三个 API 均不替调用者调度；prepare/apply 使用真实 Paper `Bukkit.isOwnedByCurrentRegion` 拒绝错误线程。
+点击在本人实体线程调用 begin(player, session)，后台 JDBC INSERT 成功后回到该实体线程，验证原会话、owner、在线状态、午夜及有效期，再调用隐藏 quota_continue 图标的真实 TrMenu handleClick。该回调先收集条件及动作，再执行普通动作；apply 仅在普通 JEXL 动作中调用一次，直接按返回值发送提示。业务顺序为：TrMenu `money 500` 条件 → prepare 成功 → TrMenu `take-money: 500` → apply 一次 → 结果提示。不要插入 delay、提前 close、切换 agent 或全局控制台派发。begin 是异步入口，不能当 boolean 使用；其余 API 不替调用者调度；prepare/apply 使用真实 Paper `Bukkit.isOwnedByCurrentRegion` 拒绝错误线程。
 
-prepare 不修改任务或余额，预抽并保存60秒内有效的一次性内存准备；失败取消本次准备，取消/关闭/退出/禁用后不能复活。apply 重新核验玩家对象、任务/进度、周期、累计、分类数量和日限，再关闭库存、复核回调后的状态并替换。准备不跨退出、重启或午夜保存。错误线程和重入调用不改正在处理的准备。
+prepare 仅允许当前已提交资格请求调用，并在返回 true 前将本请求置为不可释放；不修改任务或余额，预抽并保存60秒内有效的一次性内存准备；失败取消本次准备，取消/关闭/退出/禁用后不能复活。apply 重新核验玩家对象、任务/进度、周期、累计、分类数量和日限，再关闭库存、复核回调后的状态并替换。准备不跨退出、重启或午夜保存。错误线程和重入调用不改正在处理的准备。明确未开始收费链的取消可按请求 UUID 删除占位；已开始收费链或数据库结果不确定时保留占位，不自动重放。无租约自动过期删除，崩溃可能保留当天额度。
 
 | 返回值 | 含义 |
 | --- | --- |
@@ -38,20 +39,20 @@ prepare 不修改任务或余额，预抽并保存60秒内有效的一次性内�
 | REJECTED | 本次明确未应用任务变更，不表示未扣费。 |
 | UNCERTAIN | 库存关闭回调或应用/保存已有可能副作用，需核对，不盲目重试、回滚或退款。 |
 
-TrMenu 原生 take-money 丢弃经济回执，余额预检后仍可能扣款失败；本桥不声称经济与任务原子成功。ODQ SQL 非停服保存为异步，快速跨服可能读取旧额度；本候选未解决跨服强互斥，不能宣称跨服每日一次已保证。具体缺口及最小验收范围均列于后端交接。
+TrMenu 原生 take-money 丢弃经济回执，余额预检后仍可能扣款失败；本桥不声称经济与任务原子成功。ODQ SQL 非停服保存为异步，保留三条存储缺口：提交前可能读取旧进度、旧写可能覆盖新任务、void 保存调用没有数据库提交回执。独立日限不被 ODQ 写入覆盖。全部实例必须指向同一权威 SQL 表，且数据库具备唯一键原子性和提交持久性。未配置时入口关闭，不回退单服。
 
-## 本地构建和证据
+## 本地构建与检查
 
 JDK25环境以 Java21目标编译，真实依赖仅用于编译与测试，不打包、不下载：
 
 ```sh
-python3 build.py --deps-dir .work/input --test
+python3 build.py --deps-dir /path/to/dependencies --test
 python3 tests/trmenu_regression.py <TrMenu-3.12.5.jar>
 python3 tests/native_capabilities.py <ODailyQuests-3.0.2.jar> <TrMenu-3.12.5.jar>
 ```
 
 依赖目录须含唯一 stable Purpur26.3 API、唯一 ODQ3.0.2及所需库；产物 `build/NomiQuestExtras-1.1.0.jar`，实际编译依赖指纹 `build/dependencies.json`。
 
-7组 Java 回归涵盖原有取消重入、完整分类与新进度、真实 ODQ 随机整组抽取、累计/周期保留、自然日/第二次/无完成门槛、跨午夜、一次性及保存异常。Port 是回调夹具；真实 ODQ 选择器测试使用固定类别、无玩家权限或占位符条件，不冒充在线玩家。其他测试为源代码或实际字节码/ABI检查。本地 JEXL 引擎探针因缺运行模块失败；独立 compat 编译因缺 PlaceholderAPI失败；未掩盖这些失败。
+Java 回归涵盖取消与重入、完整分类与新进度、ODQ 随机整组抽取、累计与周期保留、自然日日限、跨午夜、一次性及保存异常。回调测试使用夹具；真实 ODQ 选择器测试使用固定类别，不包含在线玩家权限或占位符条件。源代码、字节码、ABI 检查和离线测试均不代表玩家本人真实付款或跨服流程已经验收，也不表示上述 ODQ 存储缺口已修复。
 
 `compat/nomidaily` 的既有源码、测试和行为原样保留，不注册、替换或部署其 PAPI 扩展。保留已有许可证声明。当前插件未退役；完整入口迁移及验证前不可卸载。

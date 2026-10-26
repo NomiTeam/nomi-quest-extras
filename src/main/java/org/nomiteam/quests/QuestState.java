@@ -13,7 +13,7 @@ import java.util.Map;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
-/** 只管理 ODQ 任务状态；日限沿用 ODQ 的持久化计数，不另建存储。 */
+/** 只管理 ODQ 任务状态；日限由独立 DurableQuota 权威控制。 */
 public final class QuestState {
     private QuestState() {}
 
@@ -25,11 +25,14 @@ public final class QuestState {
     }
 
     public static boolean available(PlayerQuests quests, RenewSchedule.Settings settings, long now) {
+        return current(quests, settings, now) && quests.getRecentlyRolled() < 1;
+    }
+
+    public static boolean current(PlayerQuests quests, RenewSchedule.Settings settings, long now) {
         // 任务过期时等 ODQ 自己刷新；不能仅清空计数后让旧任务再获得一次额度。
         return calendarSchedule(settings) && quests != null && quests.getTimestamp() != null
                 && quests.getTimestamp() <= now
-                && MenuBridge.day(quests.getTimestamp()).equals(MenuBridge.day(now))
-                && quests.getRecentlyRolled() < 1;
+                && MenuBridge.day(quests.getTimestamp()).equals(MenuBridge.day(now));
     }
 
     /** 库存关闭回调开始后，异常不能证明没有副作用，不盲目回滚或重试。 */
