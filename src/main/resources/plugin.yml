@@ -1,9 +1,11 @@
 name: NomiQuestExtras
-version: 1.0.0
+version: 1.1.0
 main: org.nomiteam.quests.NomiQuestExtras
 api-version: '1.21'
 folia-supported: true
-depend: [Vault, ODailyQuests]
+depend: [ODailyQuests, TrMenu]
+libraries:
+  - org.mariadb.jdbc:mariadb-java-client:3.5.3
 commands:
   nomiquestreset:
     description: 每日整组任务重抽

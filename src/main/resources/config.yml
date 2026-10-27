@@ -1,0 +1,7 @@
+# All participating servers MUST use the same authoritative database/table.
+# Parent/backend supplies private values and JDBC driver. No automatic schema creation.
+quota:
+  jdbc-driver-class: ''
+  jdbc-url: ''
+  username: ''
+  password: ''

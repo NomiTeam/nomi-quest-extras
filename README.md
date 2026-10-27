@@ -1,30 +1,58 @@
-# NomiQuestExtras 1.0.0
+# NomiQuestExtras 1.1.0
 
-每日一次整组重抽每日任务，保留累计完成总数、分类累计总数与原日周期时间戳，当前任务进度归零。默认费用 500，可在插件生成的 `config.yml` 中配置 `price`（非负、最多两位小数）。插件自行通过 Vault 收费与补偿。
+每日花费 **500 米粒**刷新 ODQ 整组任务，每人 Asia/Shanghai 自然日一次，未完成、部分完成或全部完成均可刷新。费用只由 TrMenu 原生动作处理；本插件不依赖 Vault，不扣费、不退款，不引入钱包、事务日志或恢复框架。
 
-依赖：JDK 25（构建和对应服务器运行环境）、支持玩家实体调度的 Paper/Folia（使用 Purpur 26.3 API 编译）、ODailyQuests **3.0.2**、Vault 兼容 API 及提供经济服务的插件。缺少依赖或经济服务时停用。
+本插件使用独立共享 SQL 表实现全服自然日日限，并通过服务器原生库加载机制声明 MariaDB JDBC 驱动。源码审查与离线检查不代表玩家本人真实付款或跨服流程已经验收。
 
-玩家使用 `/nomiquestreset` 或兼容命令 `/dailyquestreset` 获取确认，再点击消息中的“确认扣费”或“取消”；只能操作本人。确认有效期 60 秒，任务变化后需要重新确认。权限 `nomiquestreset.use` 默认允许。原生单任务 reroll 命令及其别名被阻止；本插件不会授予 ODQ 管理或 reroll 权限。
+## 原生优先的边界
 
-本机控制台可用 `dailyquestreset <在线玩家>` 为该玩家生成重抽确认（不直接扣费），玩家确认后承担费用；目标必须是在线玩家名。`nomiquestreset audit` 只读查看本地事务，`nomiquestreset selftest` 实际运行领域断言，不修改玩家数据。
+ODQ 3.0.2 的玩家 reroll 只刷新单项；管理员 `dqadmin reset quests <玩家>` 可刷新整组，但重建 timestamp、清零 recentRerolls，且该路径不转交目标玩家实体线程。TrMenu 原生日期标记可以拼接正常流程，不能因缺少额外原子性就否定它；当前保留最小桥以在本人实体线程抽齐整组、复核任务状态并在收费前原子获取独立日限。日限表唯一键为 UUID、上海日期，不读取 ODQ recent_rerolls 判断额度。
 
-ODQ 保存接口没有提交确认。`SUBMITTED` 表示已提交保存请求，不能证明数据库提交成功；同一日周期禁止再次收费，重启后保留限制。结果不明确的扣款、退款或回滚进入人工核对状态，禁止自动重试。事务日志与变更前后证据保存在插件数据目录中，需由运营人员结合 ODQ 存储及经济流水核验。
+TrMenu 3.12.5 的 JEXL 每次复制上下文，可用于调用本桥；共享 JavaScript 的玩家绑定有已知串绑风险，不用于本流程。真实 JAR 字节码及 API 的离线核验不等同于真实菜单、玩家实体线程或付款流程的运行验收。
 
-构建时提供私有依赖目录，依赖只参与编译，不打包进插件：
+## 行为与入口
 
-```sh
-python3 build.py --deps-dir /path/to/private-deps --test
-# 或设置 NOMI_DEPS_DIR 后运行 python3 build.py --test
+玩家 `/nomiquestreset`、旧别名 `/dailyquestreset` 及命名空间入口只打开 `DailyQuestReset` 确认菜单；本机控制台 `dailyquestreset <在线玩家>` 也只打开该玩家菜单。玩家不能通过参数执行 apply/confirm 或指定其他玩家。权限 `nomiquestreset.use` 默认允许，不授予 ODQ 管理权限。原生单任务 reroll、动态子命令别名、主命令别名和命名空间受事件及命令执行器拦截。
+
+整组刷新使用 `QuestsManager.selectRandomQuests`，按本人当前分类数量验证抽齐并使用全新进度；当日完成数归零，保留累计总数、分类累计及原周期 timestamp，设置 `recentlyRolled=1` 并请求 ODQ 保存。抽中的任务可以与原任务相同，不保证每项不同。
+
+自然日复用 ODQ 的实际解析设置：`timestamp_mode=1`、`renew_time=00:00`、`renew_interval=1d`、时区 `Asia/Shanghai`。设置不符时启动警告且拒绝准备，不自动修改 ODQ。旧周期过期时等待 ODQ 刷新；昨日准备不得在今日应用。
+
+## 最小菜单 API
+
+从 Bukkit 插件管理器获取本插件实例，调用：
+
+```java
+public void begin(org.bukkit.entity.Player player, Object trMenuSession);
+public boolean prepare(org.bukkit.entity.Player player);
+public String apply(org.bukkit.entity.Player player);
+public void cancel(org.bukkit.entity.Player player);
 ```
 
-依赖目录应含唯一一份 stable Purpur 26.3 API、ODQ 3.0.2、Vault 兼容 API 及 API 所需运行库。输出 `build/NomiQuestExtras-1.0.0.jar`；测试无需运行服务器。
+点击在本人实体线程调用 begin(player, session)，后台 JDBC INSERT 成功后回到该实体线程，验证原会话、owner、在线状态、午夜及有效期，再调用隐藏 quota_continue 图标的真实 TrMenu handleClick。该回调先收集条件及动作，再执行普通动作；apply 仅在普通 JEXL 动作中调用一次，直接按返回值发送提示。业务顺序为：TrMenu `money 500` 条件 → prepare 成功 → TrMenu `take-money: 500` → apply 一次 → 结果提示。不要插入 delay、提前 close、切换 agent 或全局控制台派发。begin 是异步入口，不能当 boolean 使用；其余 API 不替调用者调度；prepare/apply 使用真实 Paper `Bukkit.isOwnedByCurrentRegion` 拒绝错误线程。
 
-实现包名为 `org.nomiteam.quests`，可独立升级；不包含另一插件业务或第三方运行库。确认按钮携带一次性 nonce，仅本人可用，60 秒过期；取消不扣费。控制台不能代玩家确认扣费。旧菜单确认按钮当前会再生成此玩家确认消息，需玩家点击后才收费。
+prepare 仅允许当前已提交资格请求调用，并在返回 true 前将本请求置为不可释放；不修改任务或余额，预抽并保存60秒内有效的一次性内存准备；失败取消本次准备，取消/关闭/退出/禁用后不能复活。apply 重新核验玩家对象、任务/进度、周期、累计、分类数量和日限，再关闭库存、复核回调后的状态并替换。准备不跨退出、重启或午夜保存。错误线程和重入调用不改正在处理的准备。明确未开始收费链的取消可按请求 UUID 删除占位；已开始收费链或数据库结果不确定时保留占位，不自动重放。无租约自动过期删除，崩溃可能保留当天额度。
 
-证据准备或初始业务验证异常发生在支付意图之前，明确未扣费，可重新确认。持久日志 I/O 可能在写入完成后抛错，不能据此断言日志未落盘；金额是否明确以是否发起 charge 及其明确返回值为边界。同步确认未应用或已恢复才允许自动退款。ODQ void 保存 API 的正常返回与旧内存对象恢复均不是数据库回执；已尝试保存后的异常进入 `COMPENSATION_UNCONFIRMED`，保留已扣费用和证据，不自动退款。`SUBMITTED` 同样只表示已请求保存。旧版本 `REFUNDED_SAVE_UNCONFIRMED` 记录继续锁定，人工处理前必须核对是否已经退款。
+| 返回值 | 含义 |
+| --- | --- |
+| SUCCESS | 内存应用完成，ODQ void 保存调用正常返回；不是数据库提交回执。 |
+| REJECTED | 本次明确未应用任务变更，不表示未扣费。 |
+| UNCERTAIN | 库存关闭回调或应用/保存已有可能副作用，需核对，不盲目重试、回滚或退款。 |
 
-未扣款恢复入口：同一进程内，`CHARGE_PENDING` 写入异常且尚未调用 charge，或 charge 明确返回 false 后 `UNPAID` 写入异常，会保留包含账号、原事务号、周期、金额、先前完整记录及 `CHARGE_NOT_CALLED` / `CHARGE_REJECTED` 原因的内存证据，并输出 `KNOWN_UNPAID` 日志；控制台 audit 可查看此证据。日志包含账号标识，应限制访问。安全锁仍保留。
+TrMenu 原生 take-money 丢弃经济回执，余额预检后仍可能扣款失败；本桥不声称经济与任务原子成功。ODQ SQL 非停服保存为异步，保留三条存储缺口：提交前可能读取旧进度、旧写可能覆盖新任务、void 保存调用没有数据库提交回执。独立日限不被 ODQ 写入覆盖。全部实例必须指向同一权威 SQL 表，且数据库具备唯一键原子性和提交持久性。未配置时入口关闭，不回退单服。
 
-存储恢复后，由玩家重新获取并确认请求。下一请求在任何新扣款之前，按账号核对原事务完整记录：只接受原先记录（仅尚未调用扣款时）、该原事务的 CHARGE_PENDING 或 UNPAID。不同事务、同事务其他阶段/周期/金额更新均阻止恢复。核对与写入在同一 Store 监视器下执行，和 Journal 的同步读写互斥。成功写入原事务 UNPAID（包括历史证据及正常返回）后才解除本进程安全锁并重新验证新请求；若写入再次失败，即使文件已替换也保留锁和证据，下次再次尝试。不会删除 pending，不提供通用 unlock。数据目录由本插件独占；停服人工改文件不属于运行时同步协议。
+## 本地构建与检查
 
-重启会丢失内存中的支付边界证据。磁盘 pending 本身不能证明没有扣款，重启后仍锁定，不能据此自动恢复。运营人员应保留原事务日志/历史、KNOWN_UNPAID 日志和时间线，并结合 Vault 提供者的交易流水核对原账号、事务、周期与金额；只有确认未扣款且未应用业务变更后，才能在停服维护流程中修复该原事务的未扣款结果并保留审计依据。charge 抛错必须核查扣款流水，refund 抛错必须核查原扣款及退款流水，避免重复退款；已应用或保存未确认还须核查库存/ODQ 存储与变更证据。无法证明金额/业务结果的记录继续人工锁定，不自动恢复。
+JDK25环境以 Java21目标编译，真实依赖仅用于编译与测试，不打包、不下载：
+
+```sh
+python3 build.py --deps-dir /path/to/dependencies --test
+python3 tests/trmenu_regression.py <TrMenu-3.12.5.jar>
+python3 tests/native_capabilities.py <ODailyQuests-3.0.2.jar> <TrMenu-3.12.5.jar>
+```
+
+依赖目录须含唯一 stable Purpur26.3 API、唯一 ODQ3.0.2及所需库；产物 `build/NomiQuestExtras-1.1.0.jar`，实际编译依赖指纹 `build/dependencies.json`。
+
+Java 回归涵盖取消与重入、完整分类与新进度、ODQ 随机整组抽取、累计与周期保留、自然日日限、跨午夜、一次性及保存异常。回调测试使用夹具；真实 ODQ 选择器测试使用固定类别，不包含在线玩家权限或占位符条件。源代码、字节码、ABI 检查和离线测试均不代表玩家本人真实付款或跨服流程已经验收，也不表示上述 ODQ 存储缺口已修复。
+
+`compat/nomidaily` 的既有源码、测试和行为原样保留，不注册、替换或部署其 PAPI 扩展。保留已有许可证声明。当前插件未退役；完整入口迁移及验证前不可卸载。
